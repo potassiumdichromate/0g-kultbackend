@@ -1,0 +1,23 @@
+{
+  "name": "@platform/zg-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "0G Storage + 0G Compute clients, ported from the duplicated ZeroGStorage.js/ZeroGCompute.js in zerodash-0g-backend and warzone-backend-0g into one shared implementation for save-service and verification-service.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@platform/utils": "*",
+    "pino": "^9.1.0"
+  },
+  "optionalDependencies": {
+    "ethers": "^6.13.1",
+    "@0gfoundation/0g-storage-ts-sdk": "^1.2.9"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,149 @@
+# Host port mappings are intentionally non-default (5434, 6380, 4322/8322) because this
+# machine already runs a native Windows PostgreSQL service on 5432 and an unrelated
+# "ai-arena" docker stack on the standard redis/nats ports. Containers talk to each other
+# over the internal Docker network using service names + standard ports (postgres:5432,
+# redis:6379, nats:4222) regardless of the host mapping below — only host-side tools
+# (e.g. `npm run dev` outside Docker) need the remapped host ports from .env.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-platform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-platform}
+      POSTGRES_DB: ${POSTGRES_DB:-kultbrowser}
+    ports: ["5434:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6380:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js"] # JetStream enabled — see architecture/05-nats-topics.md
+    ports: ["4322:4222", "8322:8222"]
+
+  api-gateway:
+    build: { context: ., dockerfile: services/api-gateway/Dockerfile }
+    env_file: .env
+    environment:
+      IDENTITY_SERVICE_PORT: 3001
+      PROFILE_SERVICE_PORT: 3002
+      LEADERBOARD_SERVICE_PORT: 3003
+      ACHIEVEMENT_SERVICE_PORT: 3004
+      REWARD_SERVICE_PORT: 3005
+    ports: ["3000:3000"]
+    depends_on: [identity-service, profile-service, leaderboard-service, achievement-service, reward-service]
+
+  identity-service:
+    build: { context: ., dockerfile: services/identity-service/Dockerfile }
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    ports: ["3001:3001"]
+    depends_on: [redis]
+
+  profile-service:
+    build: { context: ., dockerfile: services/profile-service/Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
+      NATS_URL: nats://nats:4222
+    ports: ["3002:3002"]
+    depends_on: [postgres, nats]
+
+  leaderboard-service:
+    build: { context: ., dockerfile: services/leaderboard-service/Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+    ports: ["3003:3003"]
+    depends_on: [postgres, redis, nats]
+
+  achievement-service:
+    build: { context: ., dockerfile: services/achievement-service/Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
+      NATS_URL: nats://nats:4222
+    ports: ["3004:3004"]
+    depends_on: [postgres, nats]
+
+  reward-service:
+    build: { context: ., dockerfile: services/reward-service/Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
+      NATS_URL: nats://nats:4222
+    ports: ["3005:3005"]
+    depends_on: [postgres, nats]
+
+  analytics-service:
+    build: { context: ., dockerfile: services/analytics-service/Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
+      NATS_URL: nats://nats:4222
+    ports: ["3006:3006"]
+    depends_on: [postgres, nats]
+
+  notification-service:
+    build: { context: ., dockerfile: services/notification-service/Dockerfile }
+    env_file: .env
+    environment:
+      NATS_URL: nats://nats:4222
+    ports: ["3007:3007"]
+    depends_on: [nats]
+
+  save-service:
+    build: { context: ., dockerfile: services/save-service/Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+    ports: ["3008:3008"]
+    depends_on: [postgres, redis, nats]
+
+  verification-service:
+    build: { context: ., dockerfile: services/verification-service/Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
+      NATS_URL: nats://nats:4222
+    ports: ["3009:3009"]
+    depends_on: [postgres, nats]
+
+  zerodash-adapter:
+    build: { context: ., dockerfile: services/game-adapters/zerodash-adapter/Dockerfile }
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+    ports: ["3101:3101"]
+    depends_on: [redis, nats]
+
+  warzone-adapter:
+    build: { context: ., dockerfile: services/game-adapters/warzone-adapter/Dockerfile }
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+    ports: ["3102:3102"]
+    depends_on: [redis, nats]
+
+volumes:
+  pgdata:

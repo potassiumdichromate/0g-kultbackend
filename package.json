@@ -1,0 +1,27 @@
+{
+  "name": "0g-kultbrowser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified gaming platform that ZeroDash, Warzone Warriors, and future games plug into. Existing game backends are NOT part of this workspace and are never modified.",
+  "workspaces": [
+    "shared/*",
+    "services/*",
+    "services/game-adapters/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:gateway": "npm run dev --workspace=services/api-gateway",
+    "dev:identity": "npm run dev --workspace=services/identity-service",
+    "dev:profile": "npm run dev --workspace=services/profile-service",
+    "db:generate": "npm run generate --workspace=shared/db",
+    "db:migrate": "npm run migrate:dev --workspace=shared/db",
+    "compose:up": "docker compose up --build",
+    "compose:down": "docker compose down -v"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

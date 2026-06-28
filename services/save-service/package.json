@@ -1,0 +1,28 @@
+{
+  "name": "@platform/save-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "JSON-only save/load for Unity clients. 0G Storage is the sole source of truth for save content (binary-encoded); Redis is a fast working-copy cache; Postgres holds only the rootHash pointer.",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@platform/utils": "*",
+    "@platform/events": "*",
+    "@platform/dto": "*",
+    "@platform/db": "*",
+    "@platform/zg-client": "*",
+    "@msgpack/msgpack": "^3.0.0",
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^20.14.2",
+    "tsx": "^4.15.6",
+    "typescript": "^5.4.5"
+  }
+}

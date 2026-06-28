@@ -1,0 +1,22 @@
+{
+  "name": "@platform/notification-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Consumes ACHIEVEMENT_UNLOCKED / REWARD_GRANTED and fans out to push/email/in-app channels (stubbed: structured log only).",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@platform/utils": "*",
+    "@platform/events": "*",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.2",
+    "tsx": "^4.15.6",
+    "typescript": "^5.4.5"
+  }
+}

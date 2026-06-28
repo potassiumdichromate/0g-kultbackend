@@ -1,0 +1,25 @@
+{
+  "name": "@platform/reward-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Grants rewards in reaction to platform events. Replaces the hardcoded warzoneGunRewardClient.js cross-game HTTP call + shared secret from the ZeroDash repo.",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@platform/utils": "*",
+    "@platform/events": "*",
+    "@platform/db": "*",
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^20.14.2",
+    "tsx": "^4.15.6",
+    "typescript": "^5.4.5"
+  }
+}

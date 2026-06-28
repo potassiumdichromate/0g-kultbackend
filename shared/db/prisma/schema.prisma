@@ -1,0 +1,300 @@
+// Shared platform schema (single Postgres instance, v1 — see architecture/08-migration-roadmap.md
+// for why this isn't split per-service yet, and how to split it later).
+//
+// GROUND RULE (round 2): 0G Storage is the single source of truth for actual player save
+// content, always binary-encoded (see save-service). NOTHING in this schema ever stores
+// game save content — only pointers to it (UserGameProgress.rootHash), platform-computed
+// records ABOUT a user (achievements, battle pass tier, leaderboard score — the platform's
+// own derived data, not a mirror of any game's save file), or config/transaction records
+// that were never "the save" in the first place (GameMetadata, IapPurchase).
+//
+// Table ownership (who is allowed to WRITE to each table; everyone may read):
+//   User                 -> identity-service (create), profile-service (update profile fields)
+//   Game                 -> platform admin / seed script
+//   UserGameProgress     -> profile-service (zero-touch path), save-service (managed path)
+//   GameSession          -> profile-service / game-adapters
+//   Achievement          -> achievement-service
+//   UserAchievement      -> achievement-service
+//   LeaderboardSnapshot  -> leaderboard-service
+//   Reward               -> reward-service
+//   UserReward           -> reward-service
+//   RawEvent             -> analytics-service
+//   GameMetadata         -> platform admin / seed script (per-game static config, not user data)
+//   BattlePassProgress   -> reward-service
+//   IapPurchase          -> reward-service (reserved — no producer yet, see migration roadmap)
+//   SecurityAuditLog     -> identity-service (synchronous writes, never via NATS)
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum IntegrationMode {
+  POLLING_ADAPTER // Phase 1: platform polls the game's existing public REST endpoints
+  NATIVE_SDK      // Phase 2: game pushes events directly via @platform/event-bridge
+}
+
+enum GameStatus {
+  ACTIVE
+  MAINTENANCE
+  RETIRED
+}
+
+enum RewardStatus {
+  PENDING
+  GRANTED
+  FAILED
+}
+
+/// One row per wallet. Single login / single identity across every game.
+model User {
+  id            String   @id @default(uuid())
+  walletAddress String   @unique @db.VarChar(42)
+  displayName   String?
+  xpTotal       Int      @default(0)
+  level         Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  gameProgress     UserGameProgress[]
+  sessions         GameSession[]
+  achievements     UserAchievement[]
+  leaderboardRows  LeaderboardSnapshot[]
+  rewards          UserReward[]
+  battlePass       BattlePassProgress[]
+  iapPurchases     IapPurchase[]
+  securityLogs     SecurityAuditLog[]
+
+  @@map("users")
+}
+
+/// Registry of every game on the platform. ZeroDash and Warzone are the first two rows;
+/// a 100th game is just another row + adapter, never a schema change.
+model Game {
+  id               String          @id @default(uuid())
+  key              String          @unique @db.VarChar(64) // e.g. "zerodash", "warzone"
+  name             String
+  integrationMode  IntegrationMode @default(POLLING_ADAPTER)
+  backendBaseUrl   String
+  status           GameStatus      @default(ACTIVE)
+  createdAt        DateTime        @default(now())
+
+  progress         UserGameProgress[]
+  sessions         GameSession[]
+  achievements     Achievement[]
+  leaderboardRows  LeaderboardSnapshot[]
+  rewardsGranted   UserReward[]
+  metadata         GameMetadata[]
+  battlePass       BattlePassProgress[]
+  iapPurchases     IapPurchase[]
+  securityLogs     SecurityAuditLog[]
+
+  @@map("games")
+}
+
+/// THE replacement for `warzoneRootHash` / `zeroDashRootHash` style columns.
+/// The actual save file always lives in 0G Storage; rootHash here is just a pointer +
+/// metadata mirror of what the game backend's own PlayerSaveRecord already tracks.
+model UserGameProgress {
+  id           String   @id @default(uuid())
+  userId       String
+  gameId       String
+  rootHash     String // 0G Storage merkle root — source of truth for retrieving the save
+  saveIndex    Int      @default(0) // mirrors the game's own anti-rollback counter
+  lastSaveTime DateTime
+  metadata     Json     @default("{}") // daStatus, computeStatus, checksum, coinSnapshot, etc.
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, gameId])
+  @@index([gameId])
+  @@map("user_game_progress")
+}
+
+model GameSession {
+  id        String    @id @default(uuid())
+  userId    String
+  gameId    String
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+  metrics   Json      @default("{}") // score, coins, missionsCompleted, etc. — game-defined shape
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([userId, gameId])
+  @@map("game_sessions")
+}
+
+/// gameId = null means a platform-wide (cross-game) achievement.
+model Achievement {
+  id          String  @id @default(uuid())
+  gameId      String?
+  key         String  @unique @db.VarChar(128)
+  name        String
+  description String?
+  criteria    Json // declarative rule evaluated by achievement-service against incoming events
+
+  game  Game?             @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  users UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String   @id @default(uuid())
+  userId        String
+  achievementId String
+  unlockedAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
+
+/// Redis sorted sets are the hot read path for leaderboards; this table is the durable,
+/// queryable copy written by leaderboard-service whenever it updates the cache.
+model LeaderboardSnapshot {
+  id         String   @id @default(uuid())
+  gameId     String? // null = global cross-game leaderboard
+  userId     String
+  metric     String   @db.VarChar(64) // "coins", "highScore", "xpTotal", ...
+  score      BigInt
+  capturedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game Game? @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([gameId, metric, score])
+  @@map("leaderboard_snapshots")
+}
+
+model Reward {
+  id      String @id @default(uuid())
+  key     String @unique @db.VarChar(128)
+  type    String @db.VarChar(64) // "cosmetic", "currency", "cross_game_unlock", ...
+  payload Json // arbitrary reward-specific data, e.g. { game: "warzone", item: "shotgun" }
+
+  grants UserReward[]
+
+  @@map("rewards")
+}
+
+/// Replaces warzoneGunRewardClient.js's hardcoded HTTP call + shared secret.
+/// reward-service grants rewards by reacting to events; sourceGameId records provenance.
+model UserReward {
+  id            String       @id @default(uuid())
+  userId        String
+  rewardId      String
+  sourceGameId  String?
+  grantedAt     DateTime     @default(now())
+  status        RewardStatus @default(PENDING)
+
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reward     Reward  @relation(fields: [rewardId], references: [id], onDelete: Cascade)
+  sourceGame Game?   @relation(fields: [sourceGameId], references: [id])
+
+  @@map("user_rewards")
+}
+
+/// Append-only raw event sink for analytics-service. Swap for a warehouse (ClickHouse,
+/// BigQuery) later without touching producers — they only know about NATS subjects.
+model RawEvent {
+  id         String   @id @default(uuid())
+  eventType  String   @db.VarChar(128)
+  gameId     String?
+  userId     String?
+  payload    Json
+  occurredAt DateTime
+
+  @@index([eventType, occurredAt])
+  @@map("raw_events")
+}
+
+/// Per-game STATIC CONFIG, not user data — e.g. anti-cheat trigger thresholds, reward
+/// thresholds. reward-service's cross-game-reward COIN_THRESHOLD reads from here for the
+/// "zerodash" row instead of being hardcoded, as the concrete example of this extension point.
+model GameMetadata {
+  id     String @id @default(uuid())
+  gameId String
+  key    String @db.VarChar(128)
+  value  Json
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, key])
+  @@map("game_metadata")
+}
+
+/// Platform-computed progression record (tier/xp the platform calculated from
+/// platform.user.xp_gained events) — the same category as UserAchievement, never a mirror
+/// of any game's save file. gameId = null models a platform-wide battle pass: cross-game XP
+/// feeding one shared pass, the "shared ecosystem" property of the platform.
+model BattlePassProgress {
+  id        String   @id @default(uuid())
+  userId    String
+  gameId    String?
+  seasonKey String   @db.VarChar(64)
+  tier      Int      @default(0)
+  xp        Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game Game? @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, gameId, seasonKey])
+  @@map("battle_pass_progress")
+}
+
+/// Direct normalization of the supplied IAPPurchase_forWarzone.js Mongoose schema (wallet
+/// string -> userId FK). A purchase receipt, never save state. Schema only this round — no
+/// event producer yet, since no IAP event was requested; reserved for real IAP integration.
+model IapPurchase {
+  id        String   @id @default(uuid())
+  userId    String
+  gameId    String
+  orderId   String   @unique
+  orderHash String   @unique
+  txHash    String   @unique
+  category  String
+  product   String
+  priceEth  String
+  priceWei  String
+  price     Decimal
+  delivered Boolean  @default(true)
+  chainId   Int?
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@map("iap_purchases")
+}
+
+/// Written SYNCHRONOUSLY by identity-service (never via NATS — auth/security logging
+/// shouldn't be eventually-consistent) on nonce-replay attempts, signature failures, and
+/// successful logins.
+model SecurityAuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  gameId    String?
+  eventType String   @db.VarChar(128)
+  detail    Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  game Game? @relation(fields: [gameId], references: [id], onDelete: SetNull)
+
+  @@index([eventType, createdAt])
+  @@map("security_audit_log")
+}
