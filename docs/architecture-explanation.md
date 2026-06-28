@@ -1,18 +1,20 @@
 # Architecture Explanation
 
-Written for an engineer joining this project cold. If you only read one doc, read this one, then [../architecture/01-system-overview.md](../architecture/01-system-overview.md).
+Written for an engineer joining this project cold. If you only read one doc, read [../architecture/00-platform-vision.md](../architecture/00-platform-vision.md) first, then this one, then [../architecture/01-system-overview.md](../architecture/01-system-overview.md).
 
 ## The one rule that shapes everything else
 
-**The existing game backends are never modified and never re-implemented.** ZeroDash and Warzone Warriors already have a working, audited save flow: Unity → binary → 0G Storage → RootHash → MongoDB metadata, and the reverse for load. That flow stays exactly where it is. Everything in this repository is a *platform layer* that sits next to those two backends (and however many future ones) and adds cross-game value — identity, profile, leaderboard, achievements, rewards, analytics — by watching what already happens, not by intercepting or replacing it.
+**This is a platform that games plug into, not a collection of services that watch games from the sidelines.** Games own gameplay, rendering, input, and local logic. The platform owns identity, profiles, the save pipeline, security, cross-game progression, achievements, rewards, analytics, and notifications — see `00-platform-vision.md` for why (short version: ZeroDash and Warzone Warriors each independently rebuilt nearly the same auth/0G-Storage/anti-cheat code, and ZeroDash hardcoded a direct call into Warzone's API just to grant one reward — that's what happens by default without a platform to plug into).
 
-That rule is why almost every other decision below looks the way it does.
+**A second, equally important rule: neither existing game backend's source code is ever modified.** Those two constraints together are why the platform currently *observes* ZeroDash/Warzone through a polling adapter instead of owning their save pipeline outright — that's a temporary bridge dictated by constraint #2, not the target shape dictated by constraint #1. The two games are expected to migrate fully onto the platform's save pipeline (`save-service`); see `../architecture/08-migration-roadmap.md`. Don't read the current adapter-based integration as "the architecture" — read it as "the bridge until the architecture applies to these two games as well."
 
-## Why a Game Adapter instead of calling the games directly
+That distinction is why almost every other decision below looks the way it does.
+
+## Why a Game Adapter exists at all, and why it's not the target
 
 A naive "unified platform" would have profile-service call `GET /player/profile` on each game backend whenever it needs data, the same way ZeroDash's `crossGameService.js` already calls Warzone's API directly today. That's the anti-pattern this whole project is meant to remove: it means every game backend has to know the platform's URL, every platform service has to know every game's URL, and adding game #5 means changing code in games #1-4.
 
-Instead, **Game Adapters** are the platform's interface to a game, not the game's interface to the platform. A game backend doesn't know `zerodash-adapter` exists. It just keeps serving the same public endpoints it already serves. The adapter polls them, normalizes what it finds into a `GAME_SAVED` event, and forgets about the specific game's shape entirely past that point — everything downstream only ever sees the generic event schema in `shared/events`.
+**Game Adapters** avoid that anti-pattern today — a game backend doesn't know `zerodash-adapter` exists, it just keeps serving the same public endpoints it already serves — but they're still a workaround, not the platform owning the capability. The real target (per the vision doc) is that the platform owns the save pipeline directly via `save-service`, and no game-specific adapter is needed at all because the platform receives the save in real time instead of polling for evidence one happened. Once ZeroDash/Warzone migrate, their adapters are deleted, not "upgraded" — they have no job left to do.
 
 ## Why NATS events instead of a shared database table
 
@@ -38,9 +40,11 @@ The first draft of this round's plan included a `PlayerStatistic(key, value Json
 
 Per the user's explicit request, the actual Unity client source for both games was read (`Metal Black OPS/Assets` for Warzone, `TempleEscape/Assets` for ZeroDash — read-only, not modified) before designing the save payload contract. That surfaced the exact field names Unity already produces (`PlayerResources.coin`, `characters.unlocked`, etc.) and a real production consideration that wouldn't have been visible from the backend code alone: Warzone's client fires a full-profile save on 17+ different micro-events plus a 25-second autosave loop, while ZeroDash only saves once per session on game-over. `ZeroDashSaveDataSchema`/`WarzoneSaveDataSchema` (`shared/dto`) are built from that real shape, which is also what makes per-game schema validation a meaningful security improvement rather than guesswork — a tampered or malformed payload is rejected by structure before it's ever encoded or charged a 0G Storage write.
 
-## Round 2: why anti-cheat became a shared `verification-service` instead of two copies
+## Round 2: why anti-cheat became a shared `verification-service` instead of two copies — and why it stays separate from the old repos' anti-cheat permanently, not just for now
 
-`ZeroGCompute.js` (anti-cheat half) is duplicated, nearly verbatim, in both `zerodash-0g-backend` and `warzone-backend-0g`. For the zero-touch path, nothing changes — each game keeps calling its own copy, and the adapter already mirrors the verdict into `UserGameProgress.metadata`. But the *managed* save pipeline has no other backend to do anti-cheat for it, so the logic had to live somewhere — porting it once into `shared/zg-client` + `verification-service`, instead of writing a third copy, is the direct continuation of this project's whole premise (don't duplicate infrastructure code per game). The anti-cheat trigger threshold is also no longer hardcoded — it reads from the new `GameMetadata` table per game, a concrete instance of the "config not code" extension point.
+`ZeroGCompute.js` (anti-cheat half) is duplicated, nearly verbatim, in both `zerodash-0g-backend` and `warzone-backend-0g`. The *managed* save pipeline has no other backend to do anti-cheat for it, so that logic had to live somewhere — porting it once into `shared/zg-client` + `verification-service`, instead of writing a third copy, is the direct continuation of this project's whole premise (don't duplicate infrastructure code per game). The anti-cheat trigger threshold is also no longer hardcoded — it reads from the new `GameMetadata` table per game, a concrete instance of the "config not code" extension point.
+
+This was explicitly confirmed, not assumed: `verification-service` and each existing repo's `ZeroGCompute.js` stay permanently separate, by design — even after ZeroDash/Warzone migrate their save pipeline onto `save-service`. There's no plan to unify them. The reason this isn't a contradiction of "the platform owns anti-cheat": once a game migrates, Unity stops calling its old backend for saves at all, so that backend's `ZeroGCompute.js` simply has nothing left to trigger on — `verification-service` becomes "the" anti-cheat for that game by replacement, not by merging logic with the old implementation.
 
 ## What "production-grade" means here, given the scope
 

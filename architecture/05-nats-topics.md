@@ -1,5 +1,7 @@
 # NATS Topic Design
 
+See [00-platform-vision.md](./00-platform-vision.md) — NATS is what lets platform services own cross-game capabilities without knowing any specific game exists.
+
 ## Subject naming convention
 
 ```

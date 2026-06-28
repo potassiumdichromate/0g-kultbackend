@@ -1,6 +1,6 @@
 # Security Model
 
-Scope: this doc covers the *managed save pipeline* (`save-service` + `verification-service`, Round 2). The zero-touch path's security (Phase 1/2) already lives in `zerodash-0g-backend`/`warzone-backend-0g` and is unchanged — see those repos' own SIWE/JWT/anti-rollback logic, which `identity-service` and `api-gateway` deliberately mirror rather than replace.
+**Read [00-platform-vision.md](./00-platform-vision.md) first.** Scope: this doc covers the *managed save pipeline* (`save-service` + `verification-service`) — the platform-owned pipeline that's the committed target for every game, including ZeroDash/Warzone once they migrate (see `08-migration-roadmap.md`). The zero-touch path's security (Phase 1/2, where those two games are today) still lives in `zerodash-0g-backend`/`warzone-backend-0g` and is unchanged — see those repos' own SIWE/JWT/anti-rollback logic, which `identity-service` and `api-gateway` deliberately mirror rather than replace.
 
 ## The problem this round explicitly targets
 
@@ -32,11 +32,24 @@ A save's `rootHash` is only ever looked up via `UserGameProgress` keyed on `(use
 
 ## 7. Security audit logging
 
-`SecurityAuditLog` (Postgres) is written **synchronously** by `identity-service` — not via NATS — on nonce-replay attempts, signature verification failures, and successful logins. Synchronous because auth/security events must never be lost to an eventually-consistent event bus; if the write fails, the request fails loudly rather than silently dropping the audit trail.
+**Designed, not yet wired — flagged honestly rather than overstated.** `SecurityAuditLog` exists as a Postgres table with the intended write pattern already decided: synchronous (not via NATS) writes from `identity-service` on nonce-replay attempts, signature verification failures, and successful logins, because auth/security events must never be lost to an eventually-consistent event bus. The actual call sites in `identity-service`'s auth routes have not been added yet — this is a tracked open item (see `Knowledge_Base.md`), not a working feature today.
 
 ## 8. Rate limiting (unchanged from Round 1, restated for completeness)
 
 `express-rate-limit` at the gateway and on `identity-service`'s `/auth` routes — same pattern both existing repos already use.
+
+## 9. Progression integrity: where today's implementation sits on the client-trust spectrum, and where it's headed
+
+`00-platform-vision.md` states the North Star directly: move from "the client states its balance" to "the platform computes its balance." This section is the honest, table-by-table accounting of where each piece of data actually sits on that spectrum today — not a claim that it's already been built.
+
+| Data | Today | Target | Gap |
+|---|---|---|---|
+| Save shape (required fields, types, ranges) | Validated synchronously, before encoding (§3) | Same — this part is already correct | None |
+| `saveIndex` | Server-computed, never client-supplied (§2) | Same — already correct | None |
+| The actual coin/XP **value** inside a save | Trusted from the client at save time; checked *after the fact*, asynchronously, by `verification-service`'s anti-cheat heuristic (§4) — a save can succeed and be flagged suspicious only afterward, never blocked up front | Economically-meaningful values (currency, XP — anything that feeds rewards/leaderboards/battle-pass) computed and validated by the platform from reported gameplay events, not accepted as a final number | This is the real, unbuilt gap. Today's anti-cheat is a fraud *detector*, not a progression *authority*. |
+| Cosmetic/local save state (character position, UI state, which menu was open) | Trusted from the client, full stop | Same — there's no integrity reason to change this | None — this category was never meant to become server-computed |
+
+**Why this isn't built yet, and why that's the right call for now:** computing currency/XP server-side from discrete events (rather than accepting a client-reported total) is a real data-model change — it means redesigning what a "save" even contains for economically-meaningful fields, not adding a validation rule. Doing that for a save format that's still client-snapshot-shaped end to end (see `08-migration-roadmap.md` Phase 3) would be solving the harder problem before the easier one. The honest sequencing is: finish migrating ZeroDash/Warzone onto the platform-owned save pipeline first (so the platform actually receives every save), then move economically-meaningful fields from snapshot-trusted to event-computed once that's true for real games, not just a managed-pipeline path nothing uses yet.
 
 ## Known limitation, documented rather than silently shipped
 

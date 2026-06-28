@@ -115,21 +115,24 @@ PlayerTutorialData: Map<tutorialType, bool>
 | POST | `/ai/predict`, `/ai/strategy` | none | hybrid AI inference |
 | GET | `/0g/dashboard`, `/0g/activity`, `/0g/badge`, `/0g/network`, `/0g/proof/:wallet/:saveIndex`, etc. | mixed | trust-score/UX dashboard endpoints |
 
-## 8. How this game plugs into `0g-kultbrowser` today (zero-touch, Phase 1)
+## 8. How this game plugs into `0g-kultbrowser` today (Phase 1 bridge — not the target, see §9)
 
 `services/game-adapters/warzone-adapter` polls `GET /player/leaderboard/decentralized` on an interval (`ADAPTER_POLL_INTERVAL_MS`), diffs each wallet's `saveIndex` against a Redis-stored cursor, and on a change fetches `GET /player/save/metadata?wallet=` to get the real `rootHash`/`checksum`/`daStatus`, then publishes `game.warzone.game_saved` to NATS. **Zero code changes to this repo.** From there, `profile-service` mirrors `(rootHash, saveIndex)` into `UserGameProgress`, and `achievement-service`/`reward-service`/`leaderboard-service`/`analytics-service` react to the same event — see `architecture/02-service-communication.md` for the sequence diagram.
+
+This adapter is a **compatibility bridge, not the platform's target architecture** for this game (see `architecture/00-platform-vision.md`) — it exists only because this repo hasn't migrated onto `save-service` yet (§9). Once it does, this adapter is deleted, not maintained.
 
 `identity-service` issues JWTs with the exact `{walletAddress, sub}` HS256 claim shape this repo's own `middleware/auth.js` already expects — pointing this game's `BROWSER_JWT_SECRET` at the platform's secret (a config change, not a code change) would let a platform-issued login work against this game's existing endpoints unmodified, if that's ever wanted.
 
 **Known gap:** the real deployed backend URL for the adapter is still unconfirmed (`WARZONE_BACKEND_URL` in `.env.example` is a placeholder guess that 404s) — the Unity client's actual `BASE_URL` (`https://zerog-warzonewarriors.onrender.com`, found in `BackendSyncManager.cs`) is a stronger candidate and should be tried before assuming the adapter is broken.
 
-## 9. Path to the managed save pipeline (Phase 3, opt-in, not done)
+## 9. Path to the managed save pipeline (Phase 3 — the committed target for this game, timing not yet scheduled)
 
-If this game's owner ever wants to retire the Unity-side WZSV encoding (see `architecture/08-migration-roadmap.md` Phase 3):
+This is the platform's actual destination for Warzone Warriors, not an optional side door for other games (see `architecture/00-platform-vision.md` and `architecture/08-migration-roadmap.md` Phase 3). What's undecided is *when*, not *whether*:
 
 1. `WarzoneSaveDataSchema` already exists in `shared/dto/src/save-data.dto.ts`, built field-for-field from §5/§6 above — no new schema work needed.
-2. Unity change (not made by this platform, and not required unless the owner opts in): in `ZGSaveManager.cs`/`BackendSyncManager.cs`, replace `Serialize()`/`UploadSave` with a plain `JsonConvert.SerializeObject(payload)` POST to `save-service`'s `POST /save/warzone`, and replace `Deserialize()`/`LoadSave` with a plain `GET /save/warzone` JSON parse. The JWT handling is unchanged — `save-service` accepts the same Bearer token shape.
-3. **Before doing this, read the production note in `architecture/08-migration-roadmap.md` Phase 3 and `architecture/09-security-model.md`:** this game's client fires a save on 17+ different micro-events plus a 25-second autosave loop, each currently a full-profile WZSV upload. Pointed at `save-service` unmodified, that's a real 0G Storage write per coin pickup. Debounce/coalesce client-side (flush on a short timer, or on "significant" events only — closer to how ZeroDash's client already behaves) before switching this game onto the managed pipeline.
+2. The only change required is in Unity (this platform never modifies this repo's source): in `ZGSaveManager.cs`/`BackendSyncManager.cs`, replace `Serialize()`/`UploadSave` with a plain `JsonConvert.SerializeObject(payload)` POST to `save-service`'s `POST /save/warzone`, and replace `Deserialize()`/`LoadSave` with a plain `GET /save/warzone` JSON parse. The JWT handling is unchanged — `save-service` accepts the same Bearer token shape.
+3. **Before doing this, read the production note in `architecture/08-migration-roadmap.md` Phase 3 and `architecture/09-security-model.md`:** this game's client fires a save on 17+ different micro-events plus a 25-second autosave loop, each currently a full-profile WZSV upload. Pointed at `save-service` unmodified, that's a real 0G Storage write per coin pickup. Debounce/coalesce client-side (flush on a short timer, or on "significant" events only — closer to how ZeroDash's client already behaves) as part of this migration, not as an optional afterthought.
+4. **Once this migration completes**, `warzone-adapter` (§8) is retired and `verification-service` becomes this game's anti-cheat going forward — this repo's own `ZeroGCompute.js` simply stops being called (Unity no longer talks to this backend for saves) rather than being merged with the platform's implementation. See `docs/architecture-explanation.md` for why those two stay separate by design.
 
 ## 10. Anti-patterns flagged in this repo (for context, not fixed by the platform)
 

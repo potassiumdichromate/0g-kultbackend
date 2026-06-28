@@ -2,6 +2,8 @@
 
 What in the two existing repos maps to what in this platform. Built from a full read-through of both codebases (see the session log in [../Knowledge_Base.md](../Knowledge_Base.md) for the detailed findings). Neither existing repo was modified to produce this table or this platform.
 
+**This table is also the literal evidence for [`../architecture/00-platform-vision.md`](../architecture/00-platform-vision.md)'s central claim.** Every row in the "Duplicated infrastructure" table below is the same code, written twice, because there was no platform for either game to plug into. That's not a hypothetical cost the vision doc invented — it's what already happened with only two games.
+
 **For a full, per-game integration guide** (backend architecture, 0G integration, auth, save format, Unity client structure, every API endpoint, and the exact platform integration path) see [game/warzonewarriors.md](./game/warzonewarriors.md) and [game/zerodash.md](./game/zerodash.md). This doc stays focused on the cross-game patterns; those two go deep on one game each.
 
 ## Duplicated infrastructure (identical or near-identical in both repos → extracted to `shared/`)
@@ -48,7 +50,9 @@ Read the actual Unity source for both games to ground the managed save pipeline'
 
 Neither Unity project was modified — this is purely how the managed pipeline's JSON contract and the production note above were derived.
 
-## Endpoints the adapters depend on (read-only, already public)
+## Endpoints the bridge adapters depend on (read-only, already public — transitional, not a platform capability)
+
+These two endpoints are what `zerodash-adapter`/`warzone-adapter` poll *only* because neither game has migrated onto `save-service` yet (see `architecture/08-migration-roadmap.md` Phase 3). Once a game migrates, its adapter — and its dependency on these endpoints — is deleted, not maintained.
 
 | Endpoint | Present in | Used by |
 |---|---|---|

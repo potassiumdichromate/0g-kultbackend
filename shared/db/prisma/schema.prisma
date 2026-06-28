@@ -6,22 +6,27 @@
 // game save content — only pointers to it (UserGameProgress.rootHash), platform-computed
 // records ABOUT a user (achievements, battle pass tier, leaderboard score — the platform's
 // own derived data, not a mirror of any game's save file), or config/transaction records
-// that were never "the save" in the first place (GameMetadata, IapPurchase).
+// that were never "the save" in the first place (GameMetadata).
+//
+// Round 3 note: an IapPurchase table existed briefly in this schema (direct normalization of
+// IAPPurchase_forWarzone.js) but was removed before anything used it — no IAP feature exists
+// yet, and adding schema for unbuilt features is exactly the premature scaffolding flagged in
+// architecture/00-platform-vision.md. Re-add it when real IAP integration is actually built.
 //
 // Table ownership (who is allowed to WRITE to each table; everyone may read):
 //   User                 -> identity-service (create), profile-service (update profile fields)
 //   Game                 -> platform admin / seed script
 //   UserGameProgress     -> profile-service (zero-touch path), save-service (managed path)
 //   GameSession          -> profile-service / game-adapters
-//   Achievement          -> achievement-service
+//   Achievement          -> achievement-service (data only — criteria evaluated generically,
+//                           see shared/utils/src/criteria.ts; no per-achievement code)
 //   UserAchievement      -> achievement-service
 //   LeaderboardSnapshot  -> leaderboard-service
-//   Reward               -> reward-service
+//   Reward               -> reward-service (data only — same generic criteria evaluator)
 //   UserReward           -> reward-service
 //   RawEvent             -> analytics-service
 //   GameMetadata         -> platform admin / seed script (per-game static config, not user data)
 //   BattlePassProgress   -> reward-service
-//   IapPurchase          -> reward-service (reserved — no producer yet, see migration roadmap)
 //   SecurityAuditLog     -> identity-service (synchronous writes, never via NATS)
 
 generator client {
@@ -67,7 +72,6 @@ model User {
   leaderboardRows  LeaderboardSnapshot[]
   rewards          UserReward[]
   battlePass       BattlePassProgress[]
-  iapPurchases     IapPurchase[]
   securityLogs     SecurityAuditLog[]
 
   @@map("users")

@@ -1,6 +1,6 @@
 # Redis Strategy
 
-Key namespace conventions are centralized in `shared/utils/src/redis-client.ts` (`RedisKeys`) so no service invents its own ad-hoc key format.
+See [00-platform-vision.md](./00-platform-vision.md) — Redis here is always a cache the platform owns, never a source of truth (that's 0G Storage for save content, Postgres for platform-computed records). Key namespace conventions are centralized in `shared/utils/src/redis-client.ts` (`RedisKeys`) so no service invents its own ad-hoc key format.
 
 | Use case | Key pattern | Data structure | TTL | Notes |
 |---|---|---|---|---|

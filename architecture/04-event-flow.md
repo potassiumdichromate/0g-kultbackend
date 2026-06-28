@@ -1,5 +1,7 @@
 # Event Flow
 
+See [00-platform-vision.md](./00-platform-vision.md) for the principle behind this catalogue: events are how the platform learns what happened without owning the game's gameplay logic, and how every platform service stays generic (game-agnostic) instead of hardcoding a game list.
+
 ## Event catalogue
 
 | Event | Producer | Consumers | Payload schema |

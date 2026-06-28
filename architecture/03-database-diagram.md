@@ -1,6 +1,6 @@
 # Database Diagram
 
-ER diagram for the shared Prisma schema (`shared/db/prisma/schema.prisma`). One Postgres instance for v1 — see [08-migration-roadmap.md](./08-migration-roadmap.md) for the documented split path.
+See [00-platform-vision.md](./00-platform-vision.md) for why this schema is shaped the way it is (platform owns progression/pointer data; 0G Storage owns save content). ER diagram for the shared Prisma schema (`shared/db/prisma/schema.prisma`). One Postgres instance for v1 — see [08-migration-roadmap.md](./08-migration-roadmap.md) for the documented split path.
 
 ## Ground rule (Round 2, applies to every table below)
 
