@@ -5,9 +5,11 @@
 -- live Postgres (e.g. `docker compose up -d postgres` first) to apply it for real and get a
 -- tracked migration history under shared/db/prisma/migrations/.
 --
--- Round 2 additions: game_metadata, battle_pass_progress, iap_purchases, security_audit_log.
--- See architecture/03-database-diagram.md for the ground rule these all follow: none of them
--- ever store actual player save content — that lives exclusively in 0G Storage, encoded.
+-- Regenerated as of Round 6 (doc audit) to match the current schema exactly: no iap_purchases
+-- table (added in Round 2, dropped in Round 3 — see architecture/03-database-diagram.md),
+-- rewards.criteria present (added in Round 4). See architecture/03-database-diagram.md for the
+-- ground rule every table here follows: none of them ever store actual player save content —
+-- that lives exclusively in 0G Storage, encoded.
 
 -- CreateEnum
 CREATE TYPE "IntegrationMode" AS ENUM ('POLLING_ADAPTER', 'NATIVE_SDK');
@@ -110,6 +112,7 @@ CREATE TABLE "rewards" (
     "key" VARCHAR(128) NOT NULL,
     "type" VARCHAR(64) NOT NULL,
     "payload" JSONB NOT NULL,
+    "criteria" JSONB,
 
     CONSTRAINT "rewards_pkey" PRIMARY KEY ("id")
 );
@@ -162,27 +165,6 @@ CREATE TABLE "battle_pass_progress" (
 );
 
 -- CreateTable
-CREATE TABLE "iap_purchases" (
-    "id" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
-    "gameId" TEXT NOT NULL,
-    "orderId" TEXT NOT NULL,
-    "orderHash" TEXT NOT NULL,
-    "txHash" TEXT NOT NULL,
-    "category" TEXT NOT NULL,
-    "product" TEXT NOT NULL,
-    "priceEth" TEXT NOT NULL,
-    "priceWei" TEXT NOT NULL,
-    "price" DECIMAL(65,30) NOT NULL,
-    "delivered" BOOLEAN NOT NULL DEFAULT true,
-    "chainId" INTEGER,
-    "metadata" JSONB NOT NULL DEFAULT '{}',
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "iap_purchases_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
 CREATE TABLE "security_audit_log" (
     "id" TEXT NOT NULL,
     "userId" TEXT,
@@ -231,15 +213,6 @@ CREATE UNIQUE INDEX "game_metadata_gameId_key_key" ON "game_metadata"("gameId", 
 CREATE UNIQUE INDEX "battle_pass_progress_userId_gameId_seasonKey_key" ON "battle_pass_progress"("userId", "gameId", "seasonKey");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "iap_purchases_orderId_key" ON "iap_purchases"("orderId");
-
--- CreateIndex
-CREATE UNIQUE INDEX "iap_purchases_orderHash_key" ON "iap_purchases"("orderHash");
-
--- CreateIndex
-CREATE UNIQUE INDEX "iap_purchases_txHash_key" ON "iap_purchases"("txHash");
-
--- CreateIndex
 CREATE INDEX "security_audit_log_eventType_createdAt_idx" ON "security_audit_log"("eventType", "createdAt");
 
 -- AddForeignKey
@@ -286,12 +259,6 @@ ALTER TABLE "battle_pass_progress" ADD CONSTRAINT "battle_pass_progress_userId_f
 
 -- AddForeignKey
 ALTER TABLE "battle_pass_progress" ADD CONSTRAINT "battle_pass_progress_gameId_fkey" FOREIGN KEY ("gameId") REFERENCES "games"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "iap_purchases" ADD CONSTRAINT "iap_purchases_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "iap_purchases" ADD CONSTRAINT "iap_purchases_gameId_fkey" FOREIGN KEY ("gameId") REFERENCES "games"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "security_audit_log" ADD CONSTRAINT "security_audit_log_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;

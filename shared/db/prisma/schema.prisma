@@ -95,7 +95,6 @@ model Game {
   rewardsGranted   UserReward[]
   metadata         GameMetadata[]
   battlePass       BattlePassProgress[]
-  iapPurchases     IapPurchase[]
   securityLogs     SecurityAuditLog[]
 
   @@map("games")
@@ -144,7 +143,7 @@ model Achievement {
   key         String  @unique @db.VarChar(128)
   name        String
   description String?
-  criteria    Json // declarative rule evaluated by achievement-service against incoming events
+  criteria    Json // EventCriteria (shared/utils/src/criteria.ts), evaluated generically by achievement-service
 
   game  Game?             @relation(fields: [gameId], references: [id], onDelete: Cascade)
   users UserAchievement[]
@@ -183,10 +182,12 @@ model LeaderboardSnapshot {
 }
 
 model Reward {
-  id      String @id @default(uuid())
-  key     String @unique @db.VarChar(128)
-  type    String @db.VarChar(64) // "cosmetic", "currency", "cross_game_unlock", ...
-  payload Json // arbitrary reward-specific data, e.g. { game: "warzone", item: "shotgun" }
+  id       String @id @default(uuid())
+  key      String @unique @db.VarChar(128)
+  type     String @db.VarChar(64) // "cosmetic", "currency", "cross_game_unlock", ...
+  payload  Json // arbitrary reward-specific data, e.g. { game: "warzone", item: "shotgun" }
+  criteria Json? // EventCriteria (shared/utils/src/criteria.ts) — when to grant this, evaluated
+                 // generically by reward-service against the event stream. Null = manual-only grant.
 
   grants UserReward[]
 
@@ -257,32 +258,6 @@ model BattlePassProgress {
 
   @@unique([userId, gameId, seasonKey])
   @@map("battle_pass_progress")
-}
-
-/// Direct normalization of the supplied IAPPurchase_forWarzone.js Mongoose schema (wallet
-/// string -> userId FK). A purchase receipt, never save state. Schema only this round — no
-/// event producer yet, since no IAP event was requested; reserved for real IAP integration.
-model IapPurchase {
-  id        String   @id @default(uuid())
-  userId    String
-  gameId    String
-  orderId   String   @unique
-  orderHash String   @unique
-  txHash    String   @unique
-  category  String
-  product   String
-  priceEth  String
-  priceWei  String
-  price     Decimal
-  delivered Boolean  @default(true)
-  chainId   Int?
-  metadata  Json     @default("{}")
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
-
-  @@map("iap_purchases")
 }
 
 /// Written SYNCHRONOUSLY by identity-service (never via NATS — auth/security logging

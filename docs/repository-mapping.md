@@ -43,16 +43,16 @@ Read the actual Unity source for both games to ground the managed save pipeline'
 
 | Unity file | What it does today | Informs |
 |---|---|---|
-| `Metal Black OPS/Assets/_Assets/Web3Integ/ZGSaveManager.cs` | Builds the full nested `PlayerProfile`/`PlayerResources`/`PlayerRambos`/.../`PlayerTutorialData` JSON (Newtonsoft), wraps it in a "WZSV" magic-header binary frame, no compression | `WarzoneSaveDataSchema` in `shared/dto/src/save-data.dto.ts` — same field names, JSON-only |
+| `Metal Black OPS/Assets/_Assets/Web3Integ/ZGSaveManager.cs` | Builds the full nested `PlayerProfile`/`PlayerResources`/`PlayerRambos`/.../`PlayerTutorialData` JSON (Newtonsoft), wraps it in a "WZSV" magic-header binary frame, no compression | `WarzoneSaveDataSchema` in `services/games/warzone-service/src/save-schema.ts` (moved out of shared code in Round 4) — same field names, JSON-only |
 | `Metal Black OPS/Assets/_Assets/Web3Integ/BackendSyncManager.cs` | `UploadSave`/`LoadSave` against `/player/save/binary`/`/player/load/binary` with `Authorization: Bearer <jwt>`; **17+ save trigger call sites** (coin/gem/stamina/medal/ticket, level-up, gun/grenade/rambo upgrade, campaign/quest/achievement/tutorial progress) plus a 25s autosave loop | The save-frequency production note in `architecture/08-migration-roadmap.md` Phase 3 — the managed pipeline is correct as built, but a noisy client would hit 0G Storage far more than necessary until debounced client-side |
-| `TempleEscape/Assets/_TempleEscape/Scripts/Savestate/ZGSaveManager.cs` | Flat `PlayerSaveData{Coins, HighScore, NftPass, CurrentCharacterIndex, UnlockedCharacters, NextDailyRewardTimestamp}`, encoded with raw `BinaryWriter` (custom "ZDSV" header, no JSON, no compression) | `ZeroDashSaveDataSchema` in `shared/dto/src/save-data.dto.ts` |
+| `TempleEscape/Assets/_TempleEscape/Scripts/Savestate/ZGSaveManager.cs` | Flat `PlayerSaveData{Coins, HighScore, NftPass, CurrentCharacterIndex, UnlockedCharacters, NextDailyRewardTimestamp}`, encoded with raw `BinaryWriter` (custom "ZDSV" header, no JSON, no compression) | `ZeroDashSaveDataSchema` in `services/games/zerodash-service/src/save-schema.ts` (moved out of shared code in Round 4) |
 | `TempleEscape/Assets/_TempleEscape/Scripts/Savestate/{BackendService.cs, GameBootstrapper.cs}` | JWT from a React-frontend URL/`SendMessage` bridge after SIWE; **save only fires once per session**, on `GameManager.GameOver()` | Confirms the JWT claim shape `identity-service` already issues is a drop-in fit; confirms ZeroDash's lower save frequency needs no client-side change unlike Warzone's |
 
 Neither Unity project was modified — this is purely how the managed pipeline's JSON contract and the production note above were derived.
 
 ## Endpoints the bridge adapters depend on (read-only, already public — transitional, not a platform capability)
 
-These two endpoints are what `zerodash-adapter`/`warzone-adapter` poll *only* because neither game has migrated onto `save-service` yet (see `architecture/08-migration-roadmap.md` Phase 3). Once a game migrates, its adapter — and its dependency on these endpoints — is deleted, not maintained.
+These two endpoints are what `sync-service` polls for ZeroDash and Warzone *only* because neither game has migrated onto `save-service` yet (see `architecture/08-migration-roadmap.md` Phase 3). Once a game migrates, `sync-service` simply stops polling it — confirmed live by flipping that game's `integrationMode` in Postgres and watching it drop out within one refresh cycle, no deploy involved.
 
 | Endpoint | Present in | Used by |
 |---|---|---|

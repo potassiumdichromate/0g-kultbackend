@@ -1,0 +1,24 @@
+{
+  "name": "@platform/zerodash-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The per-game platform service for ZeroDash. Unity talks to this, not directly to save-service — owns ZeroDash's save shape and delegates the generic save mechanic to save-service internally. Simpler reference case for the per-game-service tier (no gameplay-event endpoint yet, unlike warzone-service's mission-completed) — see architecture/00-platform-vision.md.",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@platform/utils": "*",
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^20.14.2",
+    "tsx": "^4.15.6",
+    "typescript": "^5.4.5"
+  }
+}

@@ -16,11 +16,17 @@ Unlike the legacy binary endpoints (which accept an optional client-supplied `X-
 
 ## 3. Per-game schema validation rejects tampered shape before anything is encoded
 
-`ZeroDashSaveDataSchema`/`WarzoneSaveDataSchema` (`shared/dto/src/save-data.dto.ts`), built from the real Unity client field names, reject malformed or out-of-range payloads (negative coins, missing required fields, wrong types) with a 400 before a single byte is encoded or a single 0G Storage write is attempted. Verified live: a payload with `coins: -999999` and missing fields was rejected with detailed validation errors (see `Knowledge_Base.md`).
+`ZeroDashSaveDataSchema`/`WarzoneSaveDataSchema`, built from the real Unity client field names, reject malformed or out-of-range payloads (negative coins, missing required fields, wrong types) with a 400 before a single byte is encoded or a single 0G Storage write is attempted. **As of Round 4, these schemas live in each game's own per-game service** (`services/games/<game>-service/src/save-schema.ts`), not in shared code — that service is the one validating, before `save-service` (now fully schema-agnostic) ever sees the payload. Verified live: a payload with `coins: -999999` and missing fields was rejected with detailed validation errors before reaching `save-service` at all (see `Knowledge_Base.md`).
 
-## 4. Two-tier validation: structural (sync) vs. semantic/anti-cheat (async)
+## 4. Three-tier validation: structural (sync, always) → semantic/anti-cheat (async, default) → semantic/anti-cheat (sync, "important" events only)
 
-`save-service` does only structural validation synchronously (shape, required fields, ranges) — enough to reject garbage immediately without adding 0G Compute latency to every save's response time. `verification-service` does semantic anti-cheat validation (plausible coin deltas, TEE-attested verdicts) asynchronously, after the save has already succeeded — matching the pattern both existing repos already use (anti-cheat never blocks the save response). The two are deliberately separated: structural validation is cheap and must never be skipped; semantic validation is expensive (an LLM call) and is conditionally triggered.
+Structural validation (shape, required fields, ranges) is now owned by each game's own per-game service (`services/games/<game>-service/src/save-schema.ts`, Round 4) and runs synchronously, always — cheap, and rejecting garbage before it ever reaches `save-service` or charges a 0G Storage write.
+
+Semantic anti-cheat (plausible coin deltas, TEE-attested verdicts) has two tiers, by design:
+
+- **Default — async, after the fact.** `verification-service` checks every `SAVE_COMPLETED` event once the save has already succeeded, matching the pattern both existing repos already use (anti-cheat never blocks the save response). Right for routine saves, where availability matters more than catching every possible cheat instantly.
+- **"Important" events — sync, before commit.** For mission completion, ranked match results, tournament/NFT rewards, and leaderboard submissions — explicitly named by the user as needing stronger guarantees than "flag it after the fact" — the check runs *before* anything is committed or published, and can reject the request outright (`422`) instead of merely flagging it. Two call sites do this today: `save-service`'s `POST /save/:gameKey` when the caller sets `important: true` in the body (the per-game service decides when a save qualifies), and `warzone-service`'s `POST /mission-completed`, which always runs the gate since mission completion is inherently the important-event case. Both reuse the same ported `shared/zg-client` compute client as the async path — not a separate implementation — and both gracefully proceed (`verdict: "SKIPPED"`) with no `ZG_COMPUTE_API_KEY` configured, live-verified.
+- **No double-charging.** A save already gated synchronously publishes a non-`"pending"` `computeStatus`; `verification-service`'s async consumer checks for this and skips re-verifying it — otherwise every important save would trigger two separate 0G Compute calls for the same decision.
 
 ## 5. RootHash ownership is implicit, not a separate check
 
@@ -32,7 +38,7 @@ A save's `rootHash` is only ever looked up via `UserGameProgress` keyed on `(use
 
 ## 7. Security audit logging
 
-**Designed, not yet wired — flagged honestly rather than overstated.** `SecurityAuditLog` exists as a Postgres table with the intended write pattern already decided: synchronous (not via NATS) writes from `identity-service` on nonce-replay attempts, signature verification failures, and successful logins, because auth/security events must never be lost to an eventually-consistent event bus. The actual call sites in `identity-service`'s auth routes have not been added yet — this is a tracked open item (see `Knowledge_Base.md`), not a working feature today.
+**Wired and verified live (Round 3).** `SecurityAuditLog` is written synchronously (not via NATS) by `identity-service` on nonce-replay attempts (`NONCE_INVALID_OR_EXPIRED`), nonce mismatches (`NONCE_MISMATCH`), signature verification failures (`SIGNATURE_VERIFICATION_FAILED`), signature/wallet mismatches (`SIGNATURE_WALLET_MISMATCH`), and successful logins (`LOGIN_SUCCESS`) — synchronous because auth/security events must never be lost to an eventually-consistent event bus. Confirmed live: a real login/replay/bad-signature sequence against a throwaway wallet produced exactly the three expected rows, with `userId` correctly populated only for the successful login (a `User` row need not exist for a failed attempt, so `userId` stays `null` there by design, not by oversight).
 
 ## 8. Rate limiting (unchanged from Round 1, restated for completeness)
 
@@ -54,6 +60,8 @@ A save's `rootHash` is only ever looked up via `UserGameProgress` keyed on `(use
 ## Known limitation, documented rather than silently shipped
 
 `BattlePassProgress`'s platform-wide row (`gameId: null`) is looked up with a manual find-then-write instead of Prisma's `upsert()`, because Postgres doesn't enforce uniqueness across multiple `NULL` values in a compound unique index — Prisma's generated types correctly refuse to let `null` participate in that lookup, which is what surfaced this. Today, with a single `reward-service` instance processing NATS messages one at a time in a sequential loop, there's no race. If `reward-service` is ever horizontally scaled to multiple concurrent instances, this needs a real fix (e.g. a non-null sentinel `"PLATFORM"` value instead of `null` for the platform-wide row) before that scale-out — noted here rather than fixed speculatively.
+
+**Already found and fixed, not just a theoretical risk:** `UserGameProgress.metadata` is written by multiple independent consumers (`profile-service` on `GAME_SAVED`, `verification-service` on `SAVE_COMPLETED`/sync gate). One of them — `profile-service` — originally did a blind metadata *replace*, which raced with `verification-service`'s update and intermittently overwrote its verdict back to `"pending"` in live testing during Round 4. Fixed by reading existing metadata and merging before writing, with `verification-service`/`save-service`'s sync-gate fields treated as fields `profile-service` only seeds if nothing has set them yet, never overwrites once set. The general rule this established: **any two consumers writing to the same JSON metadata column must merge, never replace** — a future third consumer touching this column needs to follow the same pattern, not reinvent it.
 
 ## Production recommendation, not implemented here (out of scope, Unity-side)
 

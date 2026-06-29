@@ -51,8 +51,9 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
     ports: ["3001:3001"]
-    depends_on: [redis]
+    depends_on: [redis, postgres]
 
   profile-service:
     build: { context: ., dockerfile: services/profile-service/Dockerfile }
@@ -127,23 +128,37 @@ services:
     ports: ["3009:3009"]
     depends_on: [postgres, nats]
 
-  zerodash-adapter:
-    build: { context: ., dockerfile: services/game-adapters/zerodash-adapter/Dockerfile }
+  sync-service:
+    build: { context: ., dockerfile: services/game-adapters/sync-service/Dockerfile }
     env_file: .env
     environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
       REDIS_URL: redis://redis:6379
       NATS_URL: nats://nats:4222
     ports: ["3101:3101"]
-    depends_on: [redis, nats]
+    depends_on: [postgres, redis, nats]
 
-  warzone-adapter:
-    build: { context: ., dockerfile: services/game-adapters/warzone-adapter/Dockerfile }
+  # Per-game platform services (Round 4) — Unity's actual front door once a game is on the
+  # managed pipeline; not used by either real game's Unity client yet (see
+  # architecture/08-migration-roadmap.md Phase 3). Each delegates the generic save mechanic to
+  # save-service internally via SAVE_SERVICE_URL.
+  warzone-service:
+    build: { context: ., dockerfile: services/games/warzone-service/Dockerfile }
     env_file: .env
     environment:
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-platform}@postgres:5432/${POSTGRES_DB:-kultbrowser}?schema=public
       NATS_URL: nats://nats:4222
-    ports: ["3102:3102"]
-    depends_on: [redis, nats]
+      SAVE_SERVICE_URL: http://save-service:3008
+    ports: ["3010:3010"]
+    depends_on: [postgres, nats, save-service]
+
+  zerodash-service:
+    build: { context: ., dockerfile: services/games/zerodash-service/Dockerfile }
+    env_file: .env
+    environment:
+      SAVE_SERVICE_URL: http://save-service:3008
+    ports: ["3011:3011"]
+    depends_on: [save-service]
 
 volumes:
   pgdata:

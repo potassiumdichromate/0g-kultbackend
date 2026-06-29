@@ -36,23 +36,30 @@ Game Adapter  →  announces "wallet X just saved!" on the platform's internal m
 
 ## How the platform's actual save pipeline works (the target for every game, old and new)
 
-This is the destination — not just an option for hypothetical future games. Unity's job shrinks to "send JSON, receive JSON":
+This is the destination — not just an option for hypothetical future games. Unity's job shrinks to "send JSON, receive JSON" — and Unity talks to **that game's own thin service** (`warzone-service`, `zerodash-service`), never to the shared save mechanic directly:
 
 ```
 Unity sends plain JSON (just the save data — no encoding, no compression, no 0G calls, no rootHash management)
         │
         ▼
-Save Service
-        ├─ 1. validates it, remembers it in Redis immediately (fast — so reloading is instant)
+warzone-service / zerodash-service  ← owns THIS game's save shape + any gameplay-event vocabulary
+        │  (e.g. Warzone's "mission completed" endpoint), validates, then delegates internally
+        ▼
+Save Service  ← fully generic, doesn't know or care which game called it
+        ├─ 1. remembers it in Redis immediately (fast — so reloading is instant)
         ├─ 2. encodes + compresses + uploads it to 0G Storage  ← this is the REAL, permanent save
         └─ 3. tells PostgreSQL only: "here's a receipt" (a pointer/hash) — never the actual save content
         │
         ▼
-Verification Service (optional, async) — checks the save for cheating in the background,
-        and does nothing if no anti-cheat key is configured (skips, never fails the save)
+Verification Service — checks the save for cheating, async by default (after the fact); for
+        high-value events (mission completion, ranked results, tournament/NFT rewards) the
+        per-game service can gate this SYNCHRONOUSLY instead, blocking the save/event if
+        flagged. Either way: does nothing if no anti-cheat key is configured (skips, never fails)
 ```
 
 **PostgreSQL never stores actual save content** — coins, inventory, progress, none of it. It only ever stores a pointer to where the real save lives on 0G Storage. If you wiped Redis and the database tomorrow, every save would still be fully recoverable from 0G. We've actually tested this (deleted the cache, reloaded — it worked, recovered straight from storage).
+
+**Why a per-game service instead of Unity calling Save Service directly?** Because a game's save *shape* and gameplay-event *vocabulary* are the one part of this pipeline that's actually game-specific — Warzone's save has guns and missions, ZeroDash's doesn't. Owning that in a tiny per-game service (not a shared file) means adding game #101 never means editing shared code, just deploying one more thin service that follows the same pattern.
 
 The longer-term direction goes one step further: instead of the client just *stating* its coin balance, the platform increasingly computes and validates that balance itself from gameplay events the client reports — see `architecture/00-platform-vision.md`'s "North Star" section. That's a future direction, not built yet.
 
@@ -69,7 +76,8 @@ The longer-term direction goes one step further: instead of the client just *sta
 | **Analytics Service** | Logs everything that happens, platform-wide, for stats later. |
 | **Notification Service** | Where push/email/in-app notifications plug in (not built out yet). |
 | **Save Service + Verification Service** | The full save lifecycle described above — this is the platform's, not any one game's. |
-| **Game Adapters** | Transitional-only: the "polite watchers" bridging existing games until they migrate onto Save Service directly. |
+| **warzone-service / zerodash-service** | Unity's actual front door for each game on the managed pipeline — owns that game's save shape + gameplay events, delegates the generic mechanic to Save Service. |
+| **Game Adapters (sync-service)** | Transitional-only: the "polite watcher" bridging existing games until they migrate onto their own per-game service. |
 
 ## The boring infrastructure underneath
 

@@ -12,9 +12,13 @@ import type { PlatformNatsClient } from "./nats-client";
  * their current saveIndex, and only calls the second — to fetch the rootHash — when a
  * wallet's saveIndex has actually advanced since last poll. No game code changes needed.
  *
- * One function, two adapters (zerodash-adapter, warzone-adapter) just supply config —
- * this is the reuse the platform analysis flagged: identical polling logic shouldn't be
- * copy-pasted per game any more than the 0G storage/chain/DA clients should be.
+ * One function, called once per game by `services/game-adapters/sync-service` (which reads
+ * the list of games to poll from Postgres, not from a per-game service). Round 1/2 originally
+ * shipped this as a `startGameSaveAdapter` call duplicated across two standalone services
+ * (zerodash-adapter, warzone-adapter) — Round 3 collapsed those into one config-driven
+ * sync-service, since two near-identical services differing only by GAME_KEY/backendBaseUrl
+ * was the same "code, not data" anti-pattern architecture/00-platform-vision.md flags
+ * elsewhere. This function itself didn't need to change — only who calls it.
  */
 
 export interface GameSaveAdapterOptions {

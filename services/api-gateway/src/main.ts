@@ -25,6 +25,16 @@ const GAME_BACKENDS: Record<string, string> = {
   warzone: process.env.WARZONE_BACKEND_URL || "https://warzone-backend-0g.onrender.com",
 };
 
+// The platform's OWN per-game services (services/games/*) — distinct from GAME_BACKENDS
+// above. /api/v1/play/<gameKey> is the "platform owns this game's save pipeline" path;
+// /api/v1/games/<gameKey> stays the legacy passthrough to that game's own old backend. The
+// same gameKey can exist in both maps during the migration window described in
+// architecture/08-migration-roadmap.md Phase 3.
+const GAME_SERVICES: Record<string, string> = {
+  warzone: `http://localhost:${process.env.WARZONE_SERVICE_PORT || 3010}`,
+  zerodash: `http://localhost:${process.env.ZERODASH_SERVICE_PORT || 3011}`,
+};
+
 const app = express();
 app.use(cors());
 app.use(rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false }));
@@ -52,6 +62,11 @@ app.use(
 
 // Pure passthrough to the real, unmodified game backends (their own auth still applies).
 app.use("/api/v1/games", createGameProxyRouter(GAME_BACKENDS));
+
+// The platform's own per-game services — Unity's actual front door once a game is on the
+// managed pipeline. requireAuth here is a coarse pre-check (these services also verify the
+// JWT themselves); kept so an unauthenticated request never reaches a per-game service at all.
+app.use("/api/v1/play", requireAuth(JWT_SECRET), createGameProxyRouter(GAME_SERVICES));
 
 app.listen(PORT, () => {
   logger.info(`api-gateway listening on :${PORT}`);

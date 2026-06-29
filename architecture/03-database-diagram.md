@@ -4,7 +4,7 @@ See [00-platform-vision.md](./00-platform-vision.md) for why this schema is shap
 
 ## Ground rule (Round 2, applies to every table below)
 
-**0G Storage is the single source of truth for actual player save content, always binary-encoded.** Nothing in this schema — not `UserGameProgress`, not any table added in Round 2 — ever stores game save content (campaign progress, inventory, a full resource snapshot, etc.). Every table here is one of three things: a *pointer* (`UserGameProgress.rootHash`), a *platform-computed record about a user* (an achievement unlocked, a battle-pass tier — the platform's own derived data, never a mirror of a save file), or *config/transaction data that was never "the save" in the first place* (`GameMetadata`, `IapPurchase`). `save-service` (see [02-service-communication.md](./02-service-communication.md)) writes the raw JSON to Redis only as a fast, disposable working copy — flushing Redis loses nothing, because every save is always re-fetchable from 0G Storage via the rootHash Postgres holds.
+**0G Storage is the single source of truth for actual player save content, always binary-encoded.** Nothing in this schema — not `UserGameProgress`, not any table added since Round 2 — ever stores game save content (campaign progress, inventory, a full resource snapshot, etc.). Every table here is one of three things: a *pointer* (`UserGameProgress.rootHash`), a *platform-computed record about a user* (an achievement unlocked, a battle-pass tier — the platform's own derived data, never a mirror of a save file), or *config/transaction data that was never "the save" in the first place* (`GameMetadata`). `save-service` (see [02-service-communication.md](./02-service-communication.md)) writes the raw JSON to Redis only as a fast, disposable working copy — flushing Redis loses nothing, because every save is always re-fetchable from 0G Storage via the rootHash Postgres holds. As of Round 4, `save-service` itself never validates against a game's shape at all — that's owned upstream, by each game's own per-game service (`services/games/*`, see `00-platform-vision.md`).
 
 ```mermaid
 erDiagram
@@ -25,8 +25,6 @@ erDiagram
     Game ||--o{ GameMetadata : configures
     User ||--o{ BattlePassProgress : has
     Game ||--o{ BattlePassProgress : "scopes (nullable = platform-wide)"
-    User ||--o{ IapPurchase : made
-    Game ||--o{ IapPurchase : "for"
     User ||--o{ SecurityAuditLog : "logged for (nullable)"
 
     User {
@@ -95,6 +93,7 @@ erDiagram
         string key
         string type
         json payload
+        json criteria "nullable EventCriteria — evaluated generically by reward-service, Round 4"
     }
 
     UserReward {
@@ -132,21 +131,6 @@ erDiagram
         datetime updatedAt
     }
 
-    IapPurchase {
-        uuid id PK
-        uuid userId FK
-        uuid gameId FK
-        string orderId
-        string orderHash
-        string txHash
-        string category
-        string product
-        decimal price
-        boolean delivered
-        json metadata
-        datetime createdAt
-    }
-
     SecurityAuditLog {
         uuid id PK
         uuid userId FK "nullable"
@@ -165,11 +149,13 @@ A per-game column on `User` doesn't scale past a handful of games and forces a s
 
 `gameId`/`userId` are plain strings, not FKs, because analytics must never fail to record an event just because the referenced game or user row doesn't exist yet (ordering races between adapters/services are expected under normal operation) — durability of the raw signal matters more here than referential integrity.
 
-## Round 2 additions, and why each one isn't "save content in disguise"
+## Additions since Round 2, and why each one isn't "save content in disguise"
 
 - **`GameMetadata`** — static, per-game *configuration* an admin sets once (anti-cheat thresholds, reward thresholds). `reward-service`'s cross-game reward threshold and `verification-service`'s anti-cheat trigger threshold both read from here now instead of being hardcoded constants — a real, working example of the extension point, not a doc promise.
 - **`BattlePassProgress`** — a platform-*computed* progression record (tier/xp the platform calculated from `platform.user.xp_gained` events), the same category as `UserAchievement`. `gameId: null` models the platform-wide pass — cross-game XP feeding one shared pass.
-- **`IapPurchase`** — direct normalization of the supplied `IAPPurchase_forWarzone.js` Mongoose schema (wallet string → `userId` FK). A purchase *receipt*, never the save itself. Schema only this round — no event producer yet, reserved for real IAP integration.
-- **`SecurityAuditLog`** — written synchronously by `identity-service` (never via NATS — auth/security logging shouldn't be eventually-consistent) on nonce-replay attempts, signature failures, and successful logins.
+- **`SecurityAuditLog`** — written synchronously by `identity-service` (never via NATS — auth/security logging shouldn't be eventually-consistent) on nonce-replay attempts, signature failures, and successful logins. Live since Round 4, not just designed: real rows are written on every login attempt, verified against a throwaway wallet driven through success, replay, and bad-signature paths.
+- **`Reward.criteria`** (Round 4) — a nullable `EventCriteria` value (same shape as `Achievement.criteria`), evaluated generically by `reward-service`'s rule matcher (`shared/utils/src/criteria.ts`) instead of one hardcoded TypeScript threshold per reward. `null` means "manual-only grant, no automatic trigger."
 
-**Dropped during design, not shipped:** an earlier draft of this round considered a generic `PlayerStatistic(key, value Json)` table to generalize ZeroDash's `coins`/`characters` and Warzone's `PlayerResources`/`PlayerRambos`/etc. directly into Postgres. That would have made Postgres a second, competing source of truth for save content — exactly the thing the ground rule above forbids. `UserGameProgress.metadata` already covers the legitimate need (a handful of denormalized scalars like `coinSnapshot` for leaderboard/achievement queries) without ever holding the full save.
+**Dropped during design, not shipped:** an earlier draft considered a generic `PlayerStatistic(key, value Json)` table to generalize ZeroDash's `coins`/`characters` and Warzone's `PlayerResources`/`PlayerRambos`/etc. directly into Postgres. That would have made Postgres a second, competing source of truth for save content — exactly the thing the ground rule above forbids. `UserGameProgress.metadata` already covers the legitimate need (a handful of denormalized scalars like `coinSnapshot` for leaderboard/achievement queries) without ever holding the full save.
+
+**Added then removed, not just never-built:** an `IapPurchase` table (direct normalization of the supplied `IAPPurchase_forWarzone.js` schema) was added in Round 2 and then dropped in Round 3 once it became clear nothing was going to use it soon — see `00-platform-vision.md`'s point about premature scaffolding. Re-add it if/when real IAP integration is actually scheduled, not before.

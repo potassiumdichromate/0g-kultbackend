@@ -4,7 +4,7 @@ How this game actually works today (Unity client + its own backend), and how it 
 
 - Backend repo: `C:\Users\RENTKAR\Desktop\0g-ai\0g-Zerodash\zerodash-0g-backend`
 - Unity project: `C:\Users\RENTKAR\Desktop\Projects\TempleEscape\Assets`
-- Platform adapter: [`services/game-adapters/zerodash-adapter`](../../services/game-adapters/zerodash-adapter)
+- Platform adapter: [`services/game-adapters/sync-service`](../../services/game-adapters/sync-service)
 
 ## 1. What this game is
 
@@ -108,9 +108,9 @@ Note the field-name and shape mismatch with the legacy Mongoose model above (`ch
 | POST | `/auth/login` | none | signature → JWT |
 | POST | `/player/save/binary` | JWT | upload ZDSV-equivalent binary (Unity's own framing — backend expects the WZSV-style 5-byte-header + JSON variant per `zgController.js`; see note below) |
 | GET | `/player/load/binary` | JWT | download latest binary |
-| GET | `/player/save/metadata?wallet=` | none | last 10 saves + on-chain anchor status (used by `zerodash-adapter`) |
+| GET | `/player/save/metadata?wallet=` | none | last 10 saves + on-chain anchor status (used by `sync-service`) |
 | GET | `/player/verify?wallet=` | none | 4-layer integrity check |
-| GET | `/player/leaderboard/decentralized` | none | top 100 by `coinSnapshot` (used by `zerodash-adapter`) |
+| GET | `/player/leaderboard/decentralized` | none | top 100 by `coinSnapshot` (used by `sync-service`) |
 | GET/POST | `/player/profile`, `/player/save` (legacy JSON), `/player/leaderboard`, `/player/nft-pass`, `/player/sessions`, `/player/blockchain-stats`, `/player/leaderboard-snapshot/:id`, `/player/leaderboard-history` | mixed | legacy/auxiliary game data, dual-written to 0G in the background |
 | GET | `/cross-game/local`, `/cross-game/progress` | none | cross-game aggregation (see §9) |
 | GET | `/0g/dashboard`, `/0g/activity`, `/0g/badge`, `/0g/network`, `/0g/proof/:wallet/:saveIndex`, `/0g/leaderboard/verified`, `/0g/explorer/:wallet` | mixed | trust-score/UX dashboard endpoints |
@@ -119,7 +119,7 @@ Note the field-name and shape mismatch with the legacy Mongoose model above (`ch
 
 ## 8. How this game plugs into `0g-kultbrowser` today (Phase 1 bridge — not the target, see §10)
 
-`services/game-adapters/zerodash-adapter` polls `GET /player/leaderboard/decentralized`, diffs `saveIndex` per wallet against a Redis cursor, fetches `GET /player/save/metadata?wallet=` on change, and publishes `game.zerodash.game_saved` to NATS. **This was the one fully live-verified path in this platform** — pointed at the real `https://zerog-zerodash.onrender.com`, it picked up 18 real players' saves with real rootHashes in its first poll cycle, and `profile-service` correctly mirrored `(rootHash, saveIndex, coinSnapshot)` into `UserGameProgress` (see `Knowledge_Base.md` for the full trace). Zero code changes to this repo.
+`services/game-adapters/sync-service` polls `GET /player/leaderboard/decentralized`, diffs `saveIndex` per wallet against a Redis cursor, fetches `GET /player/save/metadata?wallet=` on change, and publishes `game.zerodash.game_saved` to NATS. **This was the one fully live-verified path in this platform** — pointed at the real `https://zerog-zerodash.onrender.com`, it picked up 18 real players' saves with real rootHashes in its first poll cycle, and `profile-service` correctly mirrored `(rootHash, saveIndex, coinSnapshot)` into `UserGameProgress` (see `Knowledge_Base.md` for the full trace). Zero code changes to this repo.
 
 Like Warzone's adapter, this is a **compatibility bridge, not the platform's target architecture** for this game (see `architecture/00-platform-vision.md`) — it exists only because this repo hasn't migrated onto `save-service` yet (§10). It's also, conveniently, the easier of the two games to migrate (see §10's note on save frequency).
 
@@ -133,11 +133,11 @@ The platform's `reward-service` (`services/reward-service/src/reward.consumer.ts
 
 This is the platform's actual destination for ZeroDash, not an optional side door (see `architecture/00-platform-vision.md` and `architecture/08-migration-roadmap.md` Phase 3). What's undecided is *when*, not *whether* — and of the two existing games, this one is the cheaper migration (see the note on save frequency below).
 
-`ZeroDashSaveDataSchema` in `shared/dto/src/save-data.dto.ts` is built from §5/§6 above (`coins`, `highScore`, `nftPass`, `characters.unlocked`/`currentIndex`, `dailyReward.nextRewardAt` as unix seconds — matching the legacy Mongoose field names, with the timestamp semantics taken from the real Unity client). `save-service`'s `POST /save/zerodash` / `GET /save/zerodash` were live-tested against this exact schema in `Knowledge_Base.md` (Round 2) — including a full Redis-flush-and-recover test proving 0G Storage, not Redis, is the real source of truth.
+`ZeroDashSaveDataSchema` now lives in `services/games/zerodash-service/src/save-schema.ts` (moved out of shared code in Round 4 — see `docs/architecture-explanation.md`), built from §5/§6 above (`coins`, `highScore`, `nftPass`, `characters.unlocked`/`currentIndex`, `dailyReward.nextRewardAt` as unix seconds — matching the legacy Mongoose field names, with the timestamp semantics taken from the real Unity client). **`zerodash-service` is built and live-verified** — it's the simpler of the two reference per-game services (no gameplay-event endpoint, unlike `warzone-service`'s `mission-completed` — ZeroDash has no equivalent granular gameplay event today): `POST /save` / `GET /save` validate against this schema and delegate to `save-service` internally, which was separately live-tested including a full Redis-flush-and-recover proving 0G Storage, not Redis, is the real source of truth.
 
-The only change required is in Unity (this platform never modifies this repo's source): in `ZGSaveManager.cs`, replace the ZDSV `Serialize`/`Deserialize`/`UploadSave`/`LoadSave` calls with a plain `JsonConvert.SerializeObject`/`DeserializeObject` POST/GET against `save-service`. Given this client only saves once per session (§6), no debounce work is needed first — unlike Warzone Warriors, this migration is "just" the encoding swap.
+The only change required is in Unity (this platform never modifies this repo's source): in `ZGSaveManager.cs`, replace the ZDSV `Serialize`/`Deserialize`/`UploadSave`/`LoadSave` calls with a plain `JsonConvert.SerializeObject`/`DeserializeObject` POST/GET against `zerodash-service` (not `save-service` directly — Unity talks to the per-game service). Given this client only saves once per session (§6), no debounce work is needed first — unlike Warzone Warriors, this migration is "just" the encoding swap.
 
-**Once this migration completes**, `zerodash-adapter` (§8) is retired and `verification-service` becomes this game's anti-cheat going forward — this repo's own `ZeroGCompute.js` simply stops being called rather than being merged with the platform's implementation (those two stay separate by design — see `docs/architecture-explanation.md`).
+**Once this migration completes**, `sync-service` (§8, shared across all bridge games) stops polling this specific game — set `Game.integrationMode` away from `POLLING_ADAPTER` and it drops out within one refresh cycle, no redeploy — and `verification-service` becomes this game's anti-cheat going forward — this repo's own `ZeroGCompute.js` simply stops being called rather than being merged with the platform's implementation (those two stay separate by design — see `docs/architecture-explanation.md`).
 
 ## 11. Anti-patterns flagged in this repo (for context, not fixed by the platform)
 

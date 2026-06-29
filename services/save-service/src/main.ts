@@ -3,7 +3,7 @@ import cors from "cors";
 import { PrismaClient } from "@platform/db";
 import { createPlatformNatsClient, createRedisClient, createLogger } from "@platform/utils";
 import { GAME_EVENTS_STREAM, GAME_EVENT_WILDCARD } from "@platform/events";
-import { createStorageDriver } from "@platform/zg-client";
+import { createStorageDriver, createComputeClient } from "@platform/zg-client";
 import { requireAuth } from "./auth";
 import { createSaveRouter } from "./save.routes";
 
@@ -18,14 +18,19 @@ async function main() {
     { name: GAME_EVENTS_STREAM, subjects: [GAME_EVENT_WILDCARD] },
   ]);
   const storage = createStorageDriver({ logger, localDiskDir: process.env.ZG_LOCAL_STORAGE_DIR || undefined });
+  // Used for the synchronous "important event" gate only (see save.routes.ts) — gracefully
+  // skips, same as verification-service's async path, when no ZG_COMPUTE_API_KEY is set.
+  const compute = createComputeClient({ logger });
 
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: "2mb" }));
 
-  app.get("/healthz", (_req, res) => res.json({ status: "ok", service: "save-service", storageMode: storage.mode }));
+  app.get("/healthz", (_req, res) =>
+    res.json({ status: "ok", service: "save-service", storageMode: storage.mode, computeConfigured: compute.isConfigured }),
+  );
 
-  app.use("/save", requireAuth(JWT_SECRET), createSaveRouter({ prisma, redis, nats, storage }));
+  app.use("/save", requireAuth(JWT_SECRET), createSaveRouter({ prisma, redis, nats, storage, compute }));
 
   app.listen(PORT, () => logger.info(`save-service listening on :${PORT} (storage mode: ${storage.mode})`));
 

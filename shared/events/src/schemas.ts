@@ -23,7 +23,11 @@ export const GameSavedPayloadSchema = EventEnvelopeSchema.extend({
 
 export const MissionCompletedPayloadSchema = EventEnvelopeSchema.extend({
   missionId: z.string(),
+  /** Game-specific gameplay metrics, e.g. { kills, time } for Warzone — opaque to the platform. */
+  metrics: z.record(z.unknown()).optional(),
   reward: z.record(z.unknown()).optional(),
+  /** Set when the per-game service ran this through a synchronous 0G Compute TEE gate before publishing. */
+  teeVerified: z.boolean().optional(),
 });
 
 export const LevelUpPayloadSchema = EventEnvelopeSchema.extend({

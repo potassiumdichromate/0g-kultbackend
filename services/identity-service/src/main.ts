@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import { PrismaClient } from "@platform/db";
 import { createRedisClient, createLogger } from "@platform/utils";
 import { createAuthRouter } from "./auth.routes";
 
@@ -13,6 +14,7 @@ if (JWT_SECRET === "dev-secret-change-me") {
 }
 
 const redis = createRedisClient(process.env.REDIS_URL || "redis://localhost:6379");
+const prisma = new PrismaClient();
 
 const app = express();
 app.use(cors());
@@ -23,9 +25,14 @@ app.get("/healthz", (_req, res) => res.json({ status: "ok", service: "identity-s
 app.use(
   "/auth",
   rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false }),
-  createAuthRouter(redis, JWT_SECRET),
+  createAuthRouter(redis, prisma, JWT_SECRET),
 );
 
 app.listen(PORT, () => {
   logger.info(`identity-service listening on :${PORT}`);
+});
+
+process.on("SIGTERM", async () => {
+  await prisma.$disconnect();
+  process.exit(0);
 });

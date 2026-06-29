@@ -29,6 +29,18 @@ export async function startGameSavedConsumer(nats: PlatformNatsClient, prisma: P
           continue;
         }
 
+        // GAME_SAVED and SAVE_COMPLETED are published from the same snapshot, before
+        // verification-service has had a chance to run — payload.computeStatus is always
+        // "pending" here. A blind metadata replace would race with verification-service's
+        // later update and clobber its verdict back to "pending" (caught live during Round 4
+        // testing, not theoretical — see Knowledge_Base.md). Merge instead: this event owns
+        // checksum/daStatus/coinSnapshot; computeStatus/verdict/teeVerified are
+        // verification-service's exclusively, so only seed them here if nothing has set them yet.
+        const existing = await prisma.userGameProgress.findUnique({
+          where: { userId_gameId: { userId: user.id, gameId: game.id } },
+        });
+        const prevMetadata = (existing?.metadata as Record<string, unknown> | undefined) ?? {};
+
         await prisma.userGameProgress.upsert({
           where: { userId_gameId: { userId: user.id, gameId: game.id } },
           update: {
@@ -36,10 +48,11 @@ export async function startGameSavedConsumer(nats: PlatformNatsClient, prisma: P
             saveIndex: payload.saveIndex,
             lastSaveTime: new Date(payload.occurredAt),
             metadata: {
+              ...prevMetadata,
               checksum: payload.checksum,
               daStatus: payload.daStatus,
-              computeStatus: payload.computeStatus,
               coinSnapshot: payload.coinSnapshot,
+              computeStatus: prevMetadata.computeStatus ?? payload.computeStatus,
             },
           },
           create: {

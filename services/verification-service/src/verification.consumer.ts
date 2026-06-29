@@ -46,6 +46,17 @@ export async function startVerificationConsumer(
         if (!msg.subject.endsWith(".save_completed")) continue;
         const payload = SaveCompletedPayloadSchema.parse(decodeJson<unknown>(msg.data));
 
+        // save-service already ran this synchronously (see its "important" flag) when
+        // computeStatus isn't "pending" — re-checking would double the 0G Compute cost for
+        // no benefit, since the verdict was already enforced before the save was committed.
+        if (payload.computeStatus && payload.computeStatus !== "pending") {
+          logger.info(
+            { gameKey: payload.gameKey, wallet: payload.walletAddress, computeStatus: payload.computeStatus },
+            "save already synchronously verified by save-service — skipping async re-check",
+          );
+          continue;
+        }
+
         const game = await prisma.game.findUnique({ where: { key: payload.gameKey } });
         if (!game) continue;
 

@@ -1,15 +1,21 @@
 import type { Logger } from "pino";
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@platform/db";
-import { decodeJson, getOrCreateUser, type PlatformNatsClient } from "@platform/utils";
-import { GAME_EVENT_WILDCARD, GameSavedPayloadSchema, PLATFORM_SUBJECTS } from "@platform/events";
+import {
+  decodeJson,
+  getOrCreateUser,
+  matchesEventCriteria,
+  type CriteriaContext,
+  type PlatformNatsClient,
+} from "@platform/utils";
+import { GAME_EVENT_WILDCARD, EventEnvelopeSchema, PLATFORM_SUBJECTS } from "@platform/events";
 
 /**
- * Achievement criteria are stored declaratively on the Achievement row (criteria Json) so
- * new achievements can be added by inserting a row, not shipping code. This skeleton wires
- * exactly one rule end to end ("first save on any game") to prove the event -> rule ->
- * UserAchievement -> ACHIEVEMENT_UNLOCKED pipeline; a real implementation would load all
- * Achievement rows and run a small rule-matcher per incoming event type.
+ * Round 3: criteria are no longer matched by one hardcoded function per achievement — every
+ * Achievement row's `criteria` (an EventCriteria value, shared/utils/src/criteria.ts) is
+ * evaluated generically against every incoming game.*.* event. Adding achievement #2 is a
+ * database row, not a code change. The seed below is the one example wired end to end, not
+ * the only achievement the system can support.
  */
 const FIRST_SAVE_ACHIEVEMENT_KEY = "first_save";
 
@@ -21,15 +27,20 @@ const FIRST_SAVE_ACHIEVEMENT_KEY = "first_save";
  */
 const XP_PER_ACHIEVEMENT = 50;
 
+const FIRST_SAVE_CRITERIA = { type: "first_event" as const, eventType: "game_saved" };
+
 export async function ensureSeedAchievements(prisma: PrismaClient) {
+  // `update` re-applies criteria on every startup, not just `{}` — see reward.consumer.ts
+  // for why an upsert that only sets fields on `create` silently never backfills a row
+  // that already existed before that field's value changed.
   await prisma.achievement.upsert({
     where: { key: FIRST_SAVE_ACHIEVEMENT_KEY },
-    update: {},
+    update: { criteria: FIRST_SAVE_CRITERIA },
     create: {
       key: FIRST_SAVE_ACHIEVEMENT_KEY,
       name: "First Steps",
       description: "Save progress in any game on the platform for the first time.",
-      criteria: { type: "first_event", eventType: "game_saved" },
+      criteria: FIRST_SAVE_CRITERIA,
     },
   });
 }
@@ -40,42 +51,45 @@ export async function startAchievementConsumer(nats: PlatformNatsClient, prisma:
   (async () => {
     for await (const msg of sub) {
       try {
-        if (!msg.subject.endsWith(".game_saved")) continue;
-        const payload = GameSavedPayloadSchema.parse(decodeJson<unknown>(msg.data));
+        const raw = decodeJson<Record<string, unknown>>(msg.data);
+        const envelope = EventEnvelopeSchema.parse(raw);
+        const eventType = msg.subject.split(".")[2]; // game.<gameKey>.<eventType>
+        const ctx: CriteriaContext = { eventType, gameKey: envelope.gameKey, payload: raw };
 
-        const user = await getOrCreateUser(prisma, payload.walletAddress);
+        const achievements = await prisma.achievement.findMany();
+        const matched = achievements.filter((a) => matchesEventCriteria(a.criteria, ctx));
+        if (matched.length === 0) continue;
 
-        const achievement = await prisma.achievement.findUnique({
-          where: { key: FIRST_SAVE_ACHIEVEMENT_KEY },
-        });
-        if (!achievement) continue;
+        const user = await getOrCreateUser(prisma, envelope.walletAddress);
 
-        const existing = await prisma.userAchievement.findUnique({
-          where: { userId_achievementId: { userId: user.id, achievementId: achievement.id } },
-        });
-        if (existing) continue;
+        for (const achievement of matched) {
+          const existing = await prisma.userAchievement.findUnique({
+            where: { userId_achievementId: { userId: user.id, achievementId: achievement.id } },
+          });
+          if (existing) continue;
 
-        await prisma.userAchievement.create({
-          data: { userId: user.id, achievementId: achievement.id },
-        });
+          await prisma.userAchievement.create({
+            data: { userId: user.id, achievementId: achievement.id },
+          });
 
-        await nats.publishJson(PLATFORM_SUBJECTS.achievementUnlocked, {
-          eventId: randomUUID(),
-          occurredAt: new Date().toISOString(),
-          walletAddress: payload.walletAddress,
-          achievementKey: achievement.key,
-          sourceGameKey: payload.gameKey,
-        });
+          await nats.publishJson(PLATFORM_SUBJECTS.achievementUnlocked, {
+            eventId: randomUUID(),
+            occurredAt: new Date().toISOString(),
+            walletAddress: envelope.walletAddress,
+            achievementKey: achievement.key,
+            sourceGameKey: envelope.gameKey,
+          });
 
-        await nats.publishJson(PLATFORM_SUBJECTS.xpGained, {
-          eventId: randomUUID(),
-          occurredAt: new Date().toISOString(),
-          walletAddress: payload.walletAddress,
-          sourceGameKey: payload.gameKey,
-          amount: XP_PER_ACHIEVEMENT,
-        });
+          await nats.publishJson(PLATFORM_SUBJECTS.xpGained, {
+            eventId: randomUUID(),
+            occurredAt: new Date().toISOString(),
+            walletAddress: envelope.walletAddress,
+            sourceGameKey: envelope.gameKey,
+            amount: XP_PER_ACHIEVEMENT,
+          });
 
-        logger.info({ wallet: payload.walletAddress, achievement: achievement.key }, "achievement unlocked");
+          logger.info({ wallet: envelope.walletAddress, achievement: achievement.key }, "achievement unlocked");
+        }
       } catch (err) {
         logger.error({ err }, "failed to process achievement event");
       }

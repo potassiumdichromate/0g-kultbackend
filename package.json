@@ -6,7 +6,8 @@
   "workspaces": [
     "shared/*",
     "services/*",
-    "services/game-adapters/*"
+    "services/game-adapters/*",
+    "services/games/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

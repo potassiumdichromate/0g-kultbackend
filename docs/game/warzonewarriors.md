@@ -4,7 +4,7 @@ How this game actually works today (Unity client + its own backend), and how it 
 
 - Backend repo: `C:\Users\RENTKAR\Desktop\0g-ai\0g-Warzone\warzone-backend-0g`
 - Unity project: `C:\Users\RENTKAR\Desktop\Projects\Warzone\Metal Black OPS\Assets`
-- Platform adapter: [`services/game-adapters/warzone-adapter`](../../services/game-adapters/warzone-adapter)
+- Platform adapter: [`services/game-adapters/sync-service`](../../services/game-adapters/sync-service)
 
 ## 1. What this game is
 
@@ -107,9 +107,9 @@ PlayerTutorialData: Map<tutorialType, bool>
 | POST | `/auth/login` | none | signature → JWT |
 | POST | `/player/save/binary` | JWT | upload WZSV binary; background pipeline: 0G Storage → chain anchor → DA → conditional anti-cheat |
 | GET | `/player/load/binary` | JWT | download latest WZSV binary |
-| GET | `/player/save/metadata?wallet=` | none | last 10 saves + on-chain anchor status (used by `warzone-adapter`, see §8) |
+| GET | `/player/save/metadata?wallet=` | none | last 10 saves + on-chain anchor status (used by `sync-service`, see §8) |
 | GET | `/player/verify?wallet=` | none | 4-layer integrity check |
-| GET | `/player/leaderboard/decentralized` | none | top 100 by `coinSnapshot` (used by `warzone-adapter`, see §8) |
+| GET | `/player/leaderboard/decentralized` | none | top 100 by `coinSnapshot` (used by `sync-service`, see §8) |
 | GET | `/player/profile`, `/player/leaderboard`, `/player/sessions`, `/player/blockchain-stats` | mixed | legacy/auxiliary game data |
 | POST | `/behavior/upload`, GET `/behavior/status/:wallet` | mixed | AI training samples |
 | POST | `/ai/predict`, `/ai/strategy` | none | hybrid AI inference |
@@ -117,7 +117,7 @@ PlayerTutorialData: Map<tutorialType, bool>
 
 ## 8. How this game plugs into `0g-kultbrowser` today (Phase 1 bridge — not the target, see §9)
 
-`services/game-adapters/warzone-adapter` polls `GET /player/leaderboard/decentralized` on an interval (`ADAPTER_POLL_INTERVAL_MS`), diffs each wallet's `saveIndex` against a Redis-stored cursor, and on a change fetches `GET /player/save/metadata?wallet=` to get the real `rootHash`/`checksum`/`daStatus`, then publishes `game.warzone.game_saved` to NATS. **Zero code changes to this repo.** From there, `profile-service` mirrors `(rootHash, saveIndex)` into `UserGameProgress`, and `achievement-service`/`reward-service`/`leaderboard-service`/`analytics-service` react to the same event — see `architecture/02-service-communication.md` for the sequence diagram.
+`services/game-adapters/sync-service` polls `GET /player/leaderboard/decentralized` on an interval (`ADAPTER_POLL_INTERVAL_MS`), diffs each wallet's `saveIndex` against a Redis-stored cursor, and on a change fetches `GET /player/save/metadata?wallet=` to get the real `rootHash`/`checksum`/`daStatus`, then publishes `game.warzone.game_saved` to NATS. **Zero code changes to this repo.** From there, `profile-service` mirrors `(rootHash, saveIndex)` into `UserGameProgress`, and `achievement-service`/`reward-service`/`leaderboard-service`/`analytics-service` react to the same event — see `architecture/02-service-communication.md` for the sequence diagram.
 
 This adapter is a **compatibility bridge, not the platform's target architecture** for this game (see `architecture/00-platform-vision.md`) — it exists only because this repo hasn't migrated onto `save-service` yet (§9). Once it does, this adapter is deleted, not maintained.
 
@@ -127,12 +127,13 @@ This adapter is a **compatibility bridge, not the platform's target architecture
 
 ## 9. Path to the managed save pipeline (Phase 3 — the committed target for this game, timing not yet scheduled)
 
-This is the platform's actual destination for Warzone Warriors, not an optional side door for other games (see `architecture/00-platform-vision.md` and `architecture/08-migration-roadmap.md` Phase 3). What's undecided is *when*, not *whether*:
+This is the platform's actual destination for Warzone Warriors, not an optional side door for other games (see `architecture/00-platform-vision.md` and `architecture/08-migration-roadmap.md` Phase 3). What's undecided is *when*, not *whether*. **`services/games/warzone-service` already exists and is live-verified** — it's the reference implementation of this exact migration, not a hypothetical:
 
-1. `WarzoneSaveDataSchema` already exists in `shared/dto/src/save-data.dto.ts`, built field-for-field from §5/§6 above — no new schema work needed.
-2. The only change required is in Unity (this platform never modifies this repo's source): in `ZGSaveManager.cs`/`BackendSyncManager.cs`, replace `Serialize()`/`UploadSave` with a plain `JsonConvert.SerializeObject(payload)` POST to `save-service`'s `POST /save/warzone`, and replace `Deserialize()`/`LoadSave` with a plain `GET /save/warzone` JSON parse. The JWT handling is unchanged — `save-service` accepts the same Bearer token shape.
-3. **Before doing this, read the production note in `architecture/08-migration-roadmap.md` Phase 3 and `architecture/09-security-model.md`:** this game's client fires a save on 17+ different micro-events plus a 25-second autosave loop, each currently a full-profile WZSV upload. Pointed at `save-service` unmodified, that's a real 0G Storage write per coin pickup. Debounce/coalesce client-side (flush on a short timer, or on "significant" events only — closer to how ZeroDash's client already behaves) as part of this migration, not as an optional afterthought.
-4. **Once this migration completes**, `warzone-adapter` (§8) is retired and `verification-service` becomes this game's anti-cheat going forward — this repo's own `ZeroGCompute.js` simply stops being called (Unity no longer talks to this backend for saves) rather than being merged with the platform's implementation. See `docs/architecture-explanation.md` for why those two stay separate by design.
+1. `WarzoneSaveDataSchema` lives in `services/games/warzone-service/src/save-schema.ts`, built field-for-field from §5/§6 above — no new schema work needed. (Round 4 moved this out of shared code specifically so this game's schema is owned alongside this game's service, not in a shared file.)
+2. The only change required is in Unity (this platform never modifies this repo's source): in `ZGSaveManager.cs`/`BackendSyncManager.cs`, replace `Serialize()`/`UploadSave` with a plain `JsonConvert.SerializeObject(payload)` POST to `warzone-service`'s `POST /save` (not `save-service` directly — Unity talks to the per-game service, which validates and forwards internally), and replace `Deserialize()`/`LoadSave` with a plain `GET /save` JSON parse. The JWT handling is unchanged.
+3. **The mission-completion path is also already built.** `warzone-service` exposes `POST /mission-completed { missionId, kills, timeSeconds }`, which gates synchronously through 0G Compute TEE verification (rejecting with `422` if the kill rate is implausible for the elapsed time) before publishing `game.warzone.mission_completed`. Live-verified end to end: a real mission report fans out into the `warzone_first_blood` achievement and XP, with no `ZG_COMPUTE_API_KEY` configured (`verdict: "SKIPPED"`, gracefully proceeding). This is what the Unity side of "Warzone publishes `MISSION_COMPLETED`, the platform reacts" should call once migrated — the rest of the mission-tracking UI logic stays entirely in Unity.
+4. **Before fully migrating, read the production note in `architecture/08-migration-roadmap.md` Phase 3 and `architecture/09-security-model.md`:** this game's client fires a save on 17+ different micro-events plus a 25-second autosave loop, each currently a full-profile WZSV upload. Pointed at the managed pipeline unmodified, that's a real 0G Storage write per coin pickup. Debounce/coalesce client-side (flush on a short timer, or on "significant" events only — closer to how ZeroDash's client already behaves) as part of this migration, not as an optional afterthought.
+5. **Once this migration completes**, `sync-service` (§8, shared across all bridge games) stops polling this specific game — set `Game.integrationMode` away from `POLLING_ADAPTER` and it drops out within one refresh cycle, no redeploy — and `verification-service` becomes this game's anti-cheat going forward — this repo's own `ZeroGCompute.js` simply stops being called (Unity no longer talks to this backend for saves) rather than being merged with the platform's implementation. See `docs/architecture-explanation.md` for why those two stay separate by design.
 
 ## 10. Anti-patterns flagged in this repo (for context, not fixed by the platform)
 
